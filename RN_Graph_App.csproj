@@ -1,0 +1,20 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <OutputType>WinExe</OutputType>
+        <TargetFramework>net10.0-windows</TargetFramework>
+        <Nullable>enable</Nullable>
+        <UseWindowsForms>true</UseWindowsForms>
+        <ImplicitUsings>enable</ImplicitUsings>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <PackageReference Include="Microsoft.ML" Version="5.0.0" />
+      <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.16.0" />
+      <PackageReference Include="Microsoft.ML.OnnxTransformer" Version="5.0.0" />
+      <PackageReference Include="ZedGraph" Version="6.0.0-alpha0001" />
+      <PackageReference Include="ZedGraph.WinForms" Version="6.0.0-alpha0001" />
+      <PackageReference Include="ZedGraphlibrary" Version="5.1.5.24776" />
+    </ItemGroup>
+
+</Project>
