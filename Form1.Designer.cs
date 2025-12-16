@@ -1,4 +1,4 @@
-﻿namespace RN_Graph_App;
+namespace RN_Graph_App;
 
 partial class Form1
 {
@@ -91,6 +91,11 @@ partial class Form1
         zedGraphControl1.Size = new System.Drawing.Size(776, 354);
         zedGraphControl1.TabIndex = 0;
         zedGraphControl1.UseExtendedPrintDialog = true;
+        zedGraphControl1.GraphPane.Title.Text = "Gráfico de Predição";
+        zedGraphControl1.GraphPane.XAxis.Title.Text = "Amostra (tempo)";
+        zedGraphControl1.GraphPane.YAxis.Title.Text = "Valor Real (Azul)";
+        zedGraphControl1.GraphPane.Y2Axis.Title.Text = "Valor IA (Vermelho)";
+        zedGraphControl1.GraphPane.Y2Axis.IsVisible = true;
         // 
         // Form1
         // 
