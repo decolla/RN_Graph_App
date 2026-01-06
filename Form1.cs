@@ -34,9 +34,10 @@ namespace RN_Graph_App
     {
         // onde será guardado o caminho do arquivo ONNX
         public string path_ONNX = "";
+
         // dados lidos do CSV
         private List<DadosCSV> dadosCsvRaw = new List<DadosCSV>();
-        
+
         public Form1()
         {
             InitializeComponent();
@@ -66,10 +67,10 @@ namespace RN_Graph_App
             }
         }
 
-       private void button3_Click(object sender, EventArgs e)
+        private void button3_Click(object sender, EventArgs e)
         {
             // tamanho esperado pelo modelo
-            const int TAMANHO_JANELA = 512; 
+            const int TAMANHO_JANELA = 512;
 
             if (dadosCsvRaw.Count == 0 || string.IsNullOrEmpty(path_ONNX))
             {
@@ -84,43 +85,46 @@ namespace RN_Graph_App
 
                 // LIMITADOR DE DADOS
                 // previne que o programa trave devido à abundância de dados
-                var dadosParciais = dadosCsvRaw.Take(350).ToList();
-                
+                var dadosParciais = dadosCsvRaw.Take(336).Reverse().ToList();
+                dadosParciais.Reverse();
+
                 var dadosParaIA = PrepararDados(dadosParciais, TAMANHO_JANELA);
 
                 MLContext mlContext = new MLContext();
                 IDataView dataView = mlContext.Data.LoadFromEnumerable(dadosParaIA);
 
                 // formato do dado de input para o ONNX
-                var shapeDict = new Dictionary<string, int[]>() {
-                    { "batch_x", new [] { 1, TAMANHO_JANELA, 7 } }, 
-                    { "batch_x_mark", new [] { 1, TAMANHO_JANELA, 5 } },
-                    { "batch_x_aux", new [] { 1, TAMANHO_JANELA, 4 } }
+                var shapeDict = new Dictionary<string, int[]>()
+                {
+                    { "batch_x", new[] { 1, TAMANHO_JANELA, 7 } },
+                    { "batch_x_mark", new[] { 1, TAMANHO_JANELA, 5 } },
+                    { "batch_x_aux", new[] { 1, TAMANHO_JANELA, 4 } }
                 };
 
                 // gera pipeline para a IA
                 var pipeline = mlContext.Transforms.ApplyOnnxModel(
-                        modelFile: path_ONNX,
-                        outputColumnNames: new[] { "output" },
-                        inputColumnNames: new[] { "batch_x", "batch_x_mark", "batch_x_aux"},
-                        shapeDictionary: shapeDict,
-                        gpuDeviceId: null,
-                        fallbackToCpu: true
-                    );
-                
+                    modelFile: path_ONNX,
+                    outputColumnNames: new[] { "output" },
+                    inputColumnNames: new[] { "batch_x", "batch_x_mark", "batch_x_aux" },
+                    shapeDictionary: shapeDict,
+                    gpuDeviceId: null,
+                    fallbackToCpu: true
+                );
+
                 MessageBox.Show("Pipeline criado. Iniciando execução...");
 
                 // transforma dados e executa IA
                 var transformer = pipeline.Fit(dataView);
                 var transformedData = transformer.Transform(dataView);
-                var predictions = mlContext.Data.CreateEnumerable<OnnxOutput>(transformedData, reuseRowObject: false).ToList();
-                
+                var predictions = mlContext.Data.CreateEnumerable<OnnxOutput>(transformedData, reuseRowObject: false)
+                    .ToList();
+
                 if (predictions.Count == 0)
                 {
                     MessageBox.Show("A IA rodou, mas a lista de previsões veio vazia!");
                     return;
                 }
-                
+
                 // verificação de Nulos
                 if (predictions[0].PredictedValue == null)
                 {
@@ -128,40 +132,35 @@ namespace RN_Graph_App
                     return;
                 }
 
-                // Plotar
-                // IMPORTANTE: AQUI É FEITO A MODIFICAÇÃO PARA QUAL COLUNA SERÁ ANALISADA
-                var colunaAlvo = dadosParciais.Select(d => (double)d.PDT2).ToList();
+                int indice = comboBox1.SelectedIndex;
+                if (indice < 0) indice = 0; // proteção
                 
-                int i = 5;
-
-                /* TABELA DE ÍNDICES:
-                 0 = PEHIST
-                 1 = PSHIST  
-                 2 = REGULADOR1
-                 3 = REGULADOR2
-                 4 = PDT1
-                 5 = PDT2
-                 6 = FT1
-                 */
-
-                List<double> yReal = colunaAlvo;
-         
+                // listas para o gráfico
+                List<double> yReal = new List<double>();
                 List<double> yPredito = new List<double>();
-                foreach(var p in predictions)
+                
+                int totalItens = dadosParciais.Count;
+
+                for (int i = 0; i < totalItens; i++)
                 {
-                    if (p.PredictedValue != null && p.PredictedValue.Length > i)
+                    // pega o valor real do dado
+                    double valorReal = IndiceSwitch(dadosParciais[i], indice);
+                    yReal.Add(valorReal);
+                    
+                    // pega o valor predito da IA
+                    var p = predictions[i];
+                    if (p.PredictedValue != null && p.PredictedValue.Length > indice)
                     {
-                        yPredito.Add((double)p.PredictedValue[i]);
+                        yPredito.Add((double)p.PredictedValue[indice]);
                     }
                     else
                     {
                         yPredito.Add(0);
                     }
                 }
-
                 PlotarGrafico(yReal, yPredito);
-                this.Text = "Concluído!";
-                MessageBox.Show($"Sucesso! Gráfico gerado com {yPredito.Count} pontos.");
+                this.Text = $"Concluído! Visualizando: {comboBox1.SelectedItem}";
+                MessageBox.Show($"Gráfico gerado para a coluna: {comboBox1.SelectedItem}");
             }
             catch (Exception ex)
             {
@@ -177,19 +176,19 @@ namespace RN_Graph_App
             for (int i = 0; i < raw.Count; i++)
             {
                 var input = new OnnxInputPronto();
-                
+
                 // listas separadas para cada entrada do ONNX
                 List<float> vetorX = new List<float>(); // Para batch_x (7 features)
                 List<float> vetorAux = new List<float>(); // Para batch_x_aux (4 features)
                 List<float> vetorMark = new List<float>(); // Para batch_x_mark (5 features)
-                
+
                 // JANELA DESLIZANTE
                 // em vez de repetir o valor atual, vou buscar os 512 valores do passado (tamanho da janela)
                 for (int j = 0; j < janela; j++)
                 {
                     // calcula qual índice do passado pegar
                     int indiceNoPassado = i - (janela - 1) + j;
-                    
+
                     // se estiver no começo do arquivo não existe passado suficiente. Repete a linha 0 (Padding).
                     if (indiceNoPassado < 0) indiceNoPassado = 0;
 
@@ -212,19 +211,21 @@ namespace RN_Graph_App
 
                     // INPUT 3: batch_x_mark (5 dummys de tempo)
                     // 5 zeros por linha
-                    vetorMark.Add(0.0f); 
-                    vetorMark.Add(0.0f); 
-                    vetorMark.Add(0.0f); 
-                    vetorMark.Add(0.0f); 
+                    vetorMark.Add(0.0f);
+                    vetorMark.Add(0.0f);
+                    vetorMark.Add(0.0f);
+                    vetorMark.Add(0.0f);
                     vetorMark.Add(0.0f);
                 }
+
                 // converte as listas para Arrays e atribui ao objeto
-                input.BatchX = vetorX.ToArray();       // Tamanho 3584 (512*7)
-                input.BatchXAux = vetorAux.ToArray();  // Tamanho 2048 (512*4)
-                input.BatchXMark = vetorMark.ToArray();// Tamanho 2560 (512*5)
+                input.BatchX = vetorX.ToArray(); // Tamanho 3584 (512*7)
+                input.BatchXAux = vetorAux.ToArray(); // Tamanho 2048 (512*4)
+                input.BatchXMark = vetorMark.ToArray(); // Tamanho 2560 (512*5)
 
                 listaPronta.Add(input);
             }
+
             return listaPronta;
         }
 
@@ -257,12 +258,18 @@ namespace RN_Graph_App
                         PSHIST_smooth_delta2 = ParseFloat(cols[11])
                     });
                 }
-                catch {/* VAZIO */}
+                catch
+                {
+                    /* VAZIO */
+                }
             }
         }
 
         // formata string para float
-        private float ParseFloat(string val) => float.TryParse(val, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float r) ? r : 0f;
+        private float ParseFloat(string val) => float.TryParse(val, System.Globalization.NumberStyles.Any,
+            System.Globalization.CultureInfo.InvariantCulture, out float r)
+            ? r
+            : 0f;
 
         // gera o gráfico após os dados serem processados
         private void PlotarGrafico(List<double> real, List<double> predito)
@@ -272,23 +279,23 @@ namespace RN_Graph_App
             GraphPane pane = zedGraphControl1.GraphPane;
 
             pane.CurveList.Clear();
-        
+
             PointPairList listReal = new PointPairList();
             PointPairList listPred = new PointPairList();
 
             // adiciona os pontos no gráfico
-            bool inverterSinal = true; 
+            bool inverterSinal = true;
             for (int i = 0; i < real.Count; i++)
             {
                 listReal.Add(i, real[i]);
-                
-                if (i < predito.Count) 
+
+                if (i < predito.Count)
                 {
                     double valorIA = predito[i];
                     listPred.Add(i, valorIA);
                 }
             }
-        
+
             // curva real - > Esquerda
             LineItem curvaReal = pane.AddCurve("Real", listReal, Color.Blue, SymbolType.None);
             curvaReal.Line.Width = 2;
@@ -297,19 +304,19 @@ namespace RN_Graph_App
             // curva predito (IA) -> Direita
             LineItem curvaPred = pane.AddCurve("IA Predição", listPred, Color.Red, SymbolType.None);
             curvaPred.Line.Width = 2;
-            curvaPred.Line.Style = System.Drawing.Drawing2D.DashStyle.Solid; 
+            curvaPred.Line.Style = System.Drawing.Drawing2D.DashStyle.Solid;
             curvaPred.IsY2Axis = true; // manda para a direita
 
             zedGraphControl1.AxisChange();
             zedGraphControl1.Invalidate();
-            
+
             // função alternativa alterando a visualização do BenchMark
-            
+
             /*
             if (zedGraphControl1 == null) return;
             GraphPane pane = zedGraphControl1.GraphPane;
             pane.CurveList.Clear();
-            
+
             PointPairList listReal = new PointPairList();
             PointPairList listPred = new PointPairList();
 
@@ -324,10 +331,26 @@ namespace RN_Graph_App
 
             LineItem curvePred = pane.AddCurve("Predito", listPred, Color.Red, SymbolType.None);
             curvePred.Line.Width = 2;
-            
+
             zedGraphControl1.AxisChange();
             zedGraphControl1.Invalidate();
             */
+        }
+
+        // função auxiliar de Switch para obter o índice 
+        private double IndiceSwitch(DadosCSV dado, int indice)
+        {
+            switch (indice)
+            {
+                case 0: return (double)dado.PEHIST;
+                case 1: return (double)dado.PSHIST;
+                case 2: return (double)dado.REGULADOR1;
+                case 3: return (double)dado.REGULADOR2;
+                case 4: return (double)dado.PDT1;
+                case 5: return (double)dado.PDT2;
+                case 6: return (double)dado.FT1;
+                default: return 0;
+            }
         }
     }
 }
