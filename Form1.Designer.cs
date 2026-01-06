@@ -35,6 +35,7 @@ partial class Form1
         button3 = new System.Windows.Forms.Button();
         panel1 = new System.Windows.Forms.Panel();
         zedGraphControl1 = new ZedGraph.ZedGraphControl();
+        comboBox1 = new System.Windows.Forms.ComboBox();
         panel1.SuspendLayout();
         SuspendLayout();
         // 
@@ -60,7 +61,7 @@ partial class Form1
         // 
         // button3
         // 
-        button3.Location = new System.Drawing.Point(284, 12);
+        button3.Location = new System.Drawing.Point(413, 12);
         button3.Name = "button3";
         button3.Size = new System.Drawing.Size(130, 66);
         button3.TabIndex = 2;
@@ -91,11 +92,25 @@ partial class Form1
         zedGraphControl1.Size = new System.Drawing.Size(776, 354);
         zedGraphControl1.TabIndex = 0;
         zedGraphControl1.UseExtendedPrintDialog = true;
-        zedGraphControl1.GraphPane.Title.Text = "Gráfico de Predição";
-        zedGraphControl1.GraphPane.XAxis.Title.Text = "Amostra (tempo)";
-        zedGraphControl1.GraphPane.YAxis.Title.Text = "Valor Real (Azul)";
-        zedGraphControl1.GraphPane.Y2Axis.Title.Text = "Valor IA (Vermelho)";
-        zedGraphControl1.GraphPane.Y2Axis.IsVisible = true;
+        // 
+        // comboBox1
+        // 
+        comboBox1.FormattingEnabled = true;
+        comboBox1.Location = new System.Drawing.Point(286, 35);
+        comboBox1.Name = "comboBox1";
+        comboBox1.Size = new System.Drawing.Size(121, 23);
+        comboBox1.TabIndex = 4;
+        comboBox1.DropDownStyle = ComboBoxStyle.DropDownList;
+        comboBox1.Items.AddRange(new string[] {
+            "PEHIST",
+            "PSHIST",
+            "REGULADOR1",
+            "REGULADOR2",
+            "PDT1",
+            "PDT2",
+            "FT1"
+        });
+        comboBox1.SelectedIndex = 0;
         // 
         // Form1
         // 
@@ -104,6 +119,7 @@ partial class Form1
         AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
         BackColor = System.Drawing.SystemColors.Control;
         ClientSize = new System.Drawing.Size(800, 450);
+        Controls.Add(comboBox1);
         Controls.Add(panel1);
         Controls.Add(button3);
         Controls.Add(button2);
@@ -114,6 +130,8 @@ partial class Form1
         panel1.ResumeLayout(false);
         ResumeLayout(false);
     }
+
+    private System.Windows.Forms.ComboBox comboBox1;
 
     private ZedGraph.ZedGraphControl zedGraphControl1;
 
