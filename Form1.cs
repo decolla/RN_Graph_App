@@ -4,37 +4,29 @@ using ZedGraph;
 
 namespace RN_Graph_App
 {
-    // dados lidos do CSV
-    public class DadosCSV
-    {
-        [LoadColumn(0)] public string Date { get; set; }
-        [LoadColumn(1)] public float PEHIST { get; set; }
-        [LoadColumn(2)] public float PSHIST { get; set; }
-        [LoadColumn(3)] public float REGULADOR1 { get; set; }
-        [LoadColumn(4)] public float REGULADOR2 { get; set; }
-        [LoadColumn(5)] public float PDT1 { get; set; }
-        [LoadColumn(6)] public float PDT2 { get; set; }
-        // no test_nooutliers FT1 é coluna 7.
-        [LoadColumn(7)] public float FT1 { get; set; } 
-    }
 
     // classe que prepara um array com os dados para serem enviados para a IA
     public class OnnxInputPronto
     {
-        // 48 linhas * 7 colunas = 336 elementos
-        [VectorType(336)] 
+        // tensor: float32[batch_size,512,7] -> 512 x 7 = 3584
+        [VectorType(3584)] 
         [ColumnName("batch_x")]
         public float[] BatchX { get; set; }
 
-        // 48 linhas * 5 colunas = 240 elementos
-        [VectorType(240)] 
+        // tensor: float32[batch_size,512,5] -> 512 x 5 = 2560
+        [VectorType(2560)] 
         [ColumnName("batch_x_mark")]
         public float[] BatchXMark { get; set; }
+        
+        // tensor: float32[batch_size,512,4] -> 512 x 4 = 2048
+        [VectorType(2048)] 
+        [ColumnName("batch_x_aux")]
+        public float[] BatchXAux { get; set; }
     }
 
     public class OnnxOutput
     {
-        [ColumnName("outputs")]
+        [ColumnName("output")]
         public float[] PredictedValue { get; set; }
     }
 
@@ -76,10 +68,8 @@ namespace RN_Graph_App
 
        private void button3_Click(object sender, EventArgs e)
         {
-            // IMPORTANTE: TAMANHO DA JANELA
-            const int TAMANHO_JANELA = 48; 
-            // esse valor estabelecido como 48 foi na base da tentativa e erro,
-            // pois não tinha informações sobre o tamanho da janela para o modelo ONNX 
+            // tamanho esperado pelo modelo
+            const int TAMANHO_JANELA = 512; 
 
             if (dadosCsvRaw.Count == 0 || string.IsNullOrEmpty(path_ONNX))
             {
@@ -94,24 +84,25 @@ namespace RN_Graph_App
 
                 // LIMITADOR DE DADOS
                 // previne que o programa trave devido à abundância de dados
-                var dadosParciais = dadosCsvRaw.Take(1000).ToList();
+                var dadosParciais = dadosCsvRaw.Take(350).ToList();
                 
-                var dadosParaIA = PrepararDadosParaIA(dadosParciais, TAMANHO_JANELA);
+                var dadosParaIA = PrepararDados(dadosParciais, TAMANHO_JANELA);
 
                 MLContext mlContext = new MLContext();
                 IDataView dataView = mlContext.Data.LoadFromEnumerable(dadosParaIA);
 
                 // formato do dado de input para o ONNX
                 var shapeDict = new Dictionary<string, int[]>() {
-                    { "batch_x",      new [] { 1, TAMANHO_JANELA, 7 } }, 
-                    { "batch_x_mark", new [] { 1, TAMANHO_JANELA, 5 } } 
+                    { "batch_x", new [] { 1, TAMANHO_JANELA, 7 } }, 
+                    { "batch_x_mark", new [] { 1, TAMANHO_JANELA, 5 } },
+                    { "batch_x_aux", new [] { 1, TAMANHO_JANELA, 4 } }
                 };
 
                 // gera pipeline para a IA
                 var pipeline = mlContext.Transforms.ApplyOnnxModel(
                         modelFile: path_ONNX,
-                        outputColumnNames: new[] { "outputs" },
-                        inputColumnNames: new[] { "batch_x", "batch_x_mark" },
+                        outputColumnNames: new[] { "output" },
+                        inputColumnNames: new[] { "batch_x", "batch_x_mark", "batch_x_aux"},
                         shapeDictionary: shapeDict,
                         gpuDeviceId: null,
                         fallbackToCpu: true
@@ -138,17 +129,34 @@ namespace RN_Graph_App
                 }
 
                 // Plotar
-                List<double> yReal = dadosParciais.Select(d => (double)d.FT1).ToList();
+                // IMPORTANTE: AQUI É FEITO A MODIFICAÇÃO PARA QUAL COLUNA SERÁ ANALISADA
+                var colunaAlvo = dadosParciais.Select(d => (double)d.PDT2).ToList();
                 
-                // PEGAR O RESULTADO CERTO
+                int i = 5;
+
+                /* TABELA DE ÍNDICES:
+                 0 = PEHIST
+                 1 = PSHIST  
+                 2 = REGULADOR1
+                 3 = REGULADOR2
+                 4 = PDT1
+                 5 = PDT2
+                 6 = FT1
+                 */
+
+                List<double> yReal = colunaAlvo;
+         
                 List<double> yPredito = new List<double>();
                 foreach(var p in predictions)
                 {
-                    // se o array tiver dados, pegamos o primeiro (pode ajustar se precisar)
-                     if (p.PredictedValue.Length > 0)
-                        yPredito.Add((double)p.PredictedValue[0]);
-                     else
+                    if (p.PredictedValue != null && p.PredictedValue.Length > i)
+                    {
+                        yPredito.Add((double)p.PredictedValue[i]);
+                    }
+                    else
+                    {
                         yPredito.Add(0);
+                    }
                 }
 
                 PlotarGrafico(yReal, yPredito);
@@ -161,7 +169,7 @@ namespace RN_Graph_App
             }
         }
 
-        private List<OnnxInputPronto> PrepararDadosParaIA(List<DadosCSV> raw, int janela)
+        private List<OnnxInputPronto> PrepararDados(List<DadosCSV> raw, int janela)
         {
             var listaPronta = new List<OnnxInputPronto>();
 
@@ -169,10 +177,14 @@ namespace RN_Graph_App
             for (int i = 0; i < raw.Count; i++)
             {
                 var input = new OnnxInputPronto();
-                List<float> vetorX = new List<float>();
+                
+                // listas separadas para cada entrada do ONNX
+                List<float> vetorX = new List<float>(); // Para batch_x (7 features)
+                List<float> vetorAux = new List<float>(); // Para batch_x_aux (4 features)
+                List<float> vetorMark = new List<float>(); // Para batch_x_mark (5 features)
                 
                 // JANELA DESLIZANTE
-                // em vez de repetir o valor atual, vou buscar os 48 valores do passado (tamanho da janela)
+                // em vez de repetir o valor atual, vou buscar os 512 valores do passado (tamanho da janela)
                 for (int j = 0; j < janela; j++)
                 {
                     // calcula qual índice do passado pegar
@@ -181,27 +193,35 @@ namespace RN_Graph_App
                     // se estiver no começo do arquivo não existe passado suficiente. Repete a linha 0 (Padding).
                     if (indiceNoPassado < 0) indiceNoPassado = 0;
 
-                    var linhaHistorica = raw[indiceNoPassado];
+                    var linha = raw[indiceNoPassado];
 
-                    vetorX.Add(linhaHistorica.PEHIST);
-                    vetorX.Add(linhaHistorica.PSHIST);
-                    vetorX.Add(linhaHistorica.REGULADOR1);
-                    vetorX.Add(linhaHistorica.REGULADOR2);
-                    vetorX.Add(linhaHistorica.PDT1);
-                    vetorX.Add(linhaHistorica.PDT2);
-                    vetorX.Add(0.0f); // Dummy (Coluna 7): preenche como vazio já que não há nada a ser predito
-                }
-                input.BatchX = vetorX.ToArray();
+                    // INPUT 1: batch_x (7 colunas principais)
+                    vetorX.Add(linha.PEHIST);
+                    vetorX.Add(linha.PSHIST);
+                    vetorX.Add(linha.REGULADOR1);
+                    vetorX.Add(linha.REGULADOR2);
+                    vetorX.Add(linha.PDT1);
+                    vetorX.Add(linha.PDT2);
+                    vetorX.Add(linha.FT1);
 
-                // BatchXMark (Tempo): Manterei zerado por enquanto, pois calcular data é complexo,
-                // mas a variação nos sensores acima já deve fazer a linha vermelha mexer.
-                // Um arquivo de "desnormalização" resolveria...
-                List<float> vetorMark = new List<float>();
-                for (int k = 0; k < janela; k++)
-                {
-                    vetorMark.Add(0.0f); vetorMark.Add(0.0f); vetorMark.Add(0.0f); vetorMark.Add(0.0f); vetorMark.Add(0.0f);
+                    // INPUT 2: batch_x_aux (4 colunas delta)
+                    vetorAux.Add(linha.PEHIST_smooth_delta1);
+                    vetorAux.Add(linha.PEHIST_smooth_delta2);
+                    vetorAux.Add(linha.PSHIST_smooth_delta1);
+                    vetorAux.Add(linha.PSHIST_smooth_delta2);
+
+                    // INPUT 3: batch_x_mark (5 dummys de tempo)
+                    // 5 zeros por linha
+                    vetorMark.Add(0.0f); 
+                    vetorMark.Add(0.0f); 
+                    vetorMark.Add(0.0f); 
+                    vetorMark.Add(0.0f); 
+                    vetorMark.Add(0.0f);
                 }
-                input.BatchXMark = vetorMark.ToArray();
+                // converte as listas para Arrays e atribui ao objeto
+                input.BatchX = vetorX.ToArray();       // Tamanho 3584 (512*7)
+                input.BatchXAux = vetorAux.ToArray();  // Tamanho 2048 (512*4)
+                input.BatchXMark = vetorMark.ToArray();// Tamanho 2560 (512*5)
 
                 listaPronta.Add(input);
             }
@@ -217,7 +237,8 @@ namespace RN_Graph_App
             {
                 // ignora linhas vazias
                 var cols = linhas[i].Split(',');
-                if (cols.Length < 8) continue;
+                // de 0 a 11
+                if (cols.Length < 12) continue;
                 try
                 {
                     dadosCsvRaw.Add(new DadosCSV
@@ -229,7 +250,11 @@ namespace RN_Graph_App
                         REGULADOR2 = ParseFloat(cols[4]),
                         PDT1 = ParseFloat(cols[5]),
                         PDT2 = ParseFloat(cols[6]),
-                        FT1 = ParseFloat(cols[7])
+                        FT1 = ParseFloat(cols[7]),
+                        PEHIST_smooth_delta1 = ParseFloat(cols[8]),
+                        PEHIST_smooth_delta2 = ParseFloat(cols[9]),
+                        PSHIST_smooth_delta1 = ParseFloat(cols[10]),
+                        PSHIST_smooth_delta2 = ParseFloat(cols[11])
                     });
                 }
                 catch {/* VAZIO */}
@@ -260,13 +285,6 @@ namespace RN_Graph_App
                 if (i < predito.Count) 
                 {
                     double valorIA = predito[i];
-                
-                    // EXPLICAÇÃO: como não tenho um parâmetro de normalização, para a visualização da predição,
-                    // inverto o sinal do valor predito para apresentar maior semelhança.
-                    if (inverterSinal)
-                    {
-                        valorIA = valorIA * -1;
-                    }
                     listPred.Add(i, valorIA);
                 }
             }

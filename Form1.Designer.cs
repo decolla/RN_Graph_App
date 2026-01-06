@@ -1,4 +1,4 @@
-namespace RN_Graph_App;
+﻿namespace RN_Graph_App;
 
 partial class Form1
 {
