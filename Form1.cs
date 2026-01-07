@@ -42,6 +42,51 @@ namespace RN_Graph_App
         {
             InitializeComponent();
         }
+        
+        public static class Scaler
+        {
+            // Valores copiados do arquivo
+            
+            public static double[] Means = new double[] {
+                539.141513, // PEHIST (Índice 0)
+                4.150937,   // PSHIST (Índice 1)
+                0.589809,   // REGULADOR1 (Índice 2)
+                0.478988,   // REGULADOR2 (Índice 3)
+                584.288289, // PDT1 (Índice 4)
+                576.223849, // PDT2 (Índice 5)
+                12.383923,  // FT1 (Índice 6)
+                -0.000100,  // PEHIST_delta1
+                -0.000103,  // PEHIST_delta2
+                -0.000003,  // PSHIST_delta1
+                -0.000002   // PSHIST_delta2
+            };
+
+            // Lista 'scale' do arquivo
+            public static double[] Scales = new double[] {
+                110.198308, // PEHIST
+                0.334460,   // PSHIST
+                0.427771,   // REGULADOR1
+                0.435729,   // REGULADOR2
+                78.077699,  // PDT1
+                85.068249,  // PDT2
+                5.801659,   // FT1
+                0.245084,   // PEHIST_delta1
+                0.252037,   // PEHIST_delta2
+                0.003503,   // PSHIST_delta1
+                0.003569    // PSHIST_delta2
+            };
+
+            // Fórmula do StandardScaler Inverso: Real = (ValorIA * Scale) + Mean
+            public static double Desnormalizar(double valorIA, int indiceColuna)
+            {
+                return (valorIA * Scales[indiceColuna]) + Means[indiceColuna];
+            }
+            
+            public static float Normalizar(float valorReal, int indiceColuna)
+            {
+                return (float)((valorReal - Means[indiceColuna]) / Scales[indiceColuna]);
+            }
+        }
 
         private void button1_Click(object sender, EventArgs e)
         {
@@ -69,8 +114,11 @@ namespace RN_Graph_App
 
         private void button3_Click(object sender, EventArgs e)
         {
-            // tamanho esperado pelo modelo
-            const int TAMANHO_JANELA = 512;
+            // O ARQUIVO EXIGE 512. NÃO PODEMOS MUDAR ISSO NO CÓDIGO.
+            const int TAMANHO_JANELA_MODELO = 512;
+            
+            // O amigo analisa 336. Vamos usar isso apenas para o gráfico.
+            const int TAMANHO_JANELA_GRAFICO = 336; 
 
             if (dadosCsvRaw.Count == 0 || string.IsNullOrEmpty(path_ONNX))
             {
@@ -81,27 +129,32 @@ namespace RN_Graph_App
             try
             {
                 this.Text = "Processando... (Aguarde)";
-                Application.DoEvents(); // força a tela a atualizar
+                Application.DoEvents();
 
-                // LIMITADOR DE DADOS
-                // previne que o programa trave devido à abundância de dados
-                var dadosParciais = dadosCsvRaw.Take(336).Reverse().ToList();
-                dadosParciais.Reverse();
+                // 1. SELEÇÃO DE DADOS
+                // Precisamos de pelo menos 512 dados para o modelo rodar.
+                // Pegamos 1000 para ter folga.
+                List<DadosCSV> dadosParaProcessar;
+                
+                if (dadosCsvRaw.Count > 1000)
+                    dadosParaProcessar = dadosCsvRaw.Skip(dadosCsvRaw.Count - 1000).ToList();
+                else
+                    dadosParaProcessar = dadosCsvRaw.ToList();
 
-                var dadosParaIA = PrepararDados(dadosParciais, TAMANHO_JANELA);
+                // Prepara os dados com janela de 512 (Obrigatório pelo erro que deu)
+                var dadosInput = PrepararDados(dadosParaProcessar, TAMANHO_JANELA_MODELO);
 
                 MLContext mlContext = new MLContext();
-                IDataView dataView = mlContext.Data.LoadFromEnumerable(dadosParaIA);
+                IDataView dataView = mlContext.Data.LoadFromEnumerable(dadosInput);
 
-                // formato do dado de input para o ONNX
+                // 2. SHAPE DICTIONARY (VOLTA PARA 512)
                 var shapeDict = new Dictionary<string, int[]>()
                 {
-                    { "batch_x", new[] { 1, TAMANHO_JANELA, 7 } },
-                    { "batch_x_mark", new[] { 1, TAMANHO_JANELA, 5 } },
-                    { "batch_x_aux", new[] { 1, TAMANHO_JANELA, 4 } }
+                    { "batch_x", new[] { 1, TAMANHO_JANELA_MODELO, 7 } },
+                    { "batch_x_mark", new[] { 1, TAMANHO_JANELA_MODELO, 5 } },
+                    { "batch_x_aux", new[] { 1, TAMANHO_JANELA_MODELO, 4 } }
                 };
 
-                // gera pipeline para a IA
                 var pipeline = mlContext.Transforms.ApplyOnnxModel(
                     modelFile: path_ONNX,
                     outputColumnNames: new[] { "output" },
@@ -111,60 +164,61 @@ namespace RN_Graph_App
                     fallbackToCpu: true
                 );
 
-                MessageBox.Show("Pipeline criado. Iniciando execução...");
-
-                // transforma dados e executa IA
                 var transformer = pipeline.Fit(dataView);
                 var transformedData = transformer.Transform(dataView);
-                var predictions = mlContext.Data.CreateEnumerable<OnnxOutput>(transformedData, reuseRowObject: false)
-                    .ToList();
+                var predictions = mlContext.Data.CreateEnumerable<OnnxOutput>(transformedData, reuseRowObject: false).ToList();
 
-                if (predictions.Count == 0)
+                if (predictions.Count == 0 || predictions[0].PredictedValue == null)
                 {
-                    MessageBox.Show("A IA rodou, mas a lista de previsões veio vazia!");
+                    MessageBox.Show("Erro: A IA não retornou dados.");
                     return;
                 }
 
-                // verificação de Nulos
-                if (predictions[0].PredictedValue == null)
-                {
-                    MessageBox.Show("A IA retornou 'null' nos valores");
-                    return;
-                }
-
-                int indice = comboBox1.SelectedIndex;
-                if (indice < 0) indice = 0; // proteção
+                // --- 3. FILTRAGEM PARA O GRÁFICO ---
+                // A IA devolveu vetores de 512 posições.
+                // Mas nós só queremos ver as últimas 336.
                 
-                // listas para o gráfico
+                // Pegamos o final das listas de dados originais
+                var dadosFinaisReal = dadosParaProcessar.Skip(dadosParaProcessar.Count - TAMANHO_JANELA_GRAFICO).ToList();
+                // Pegamos o final das predições
+                var predicoesFinais = predictions.Skip(predictions.Count - TAMANHO_JANELA_GRAFICO).ToList();
+
+                int indiceEscolhido = comboBox1.SelectedIndex;
+                if (indiceEscolhido < 0) indiceEscolhido = 0;
+
                 List<double> yReal = new List<double>();
                 List<double> yPredito = new List<double>();
-                
-                int totalItens = dadosParciais.Count;
 
-                for (int i = 0; i < totalItens; i++)
+                for(int i = 0; i < dadosFinaisReal.Count; i++)
                 {
-                    // pega o valor real do dado
-                    double valorReal = IndiceSwitch(dadosParciais[i], indice);
-                    yReal.Add(valorReal);
-                    
-                    // pega o valor predito da IA
-                    var p = predictions[i];
-                    if (p.PredictedValue != null && p.PredictedValue.Length > indice)
+                    // Real
+                    yReal.Add(IndiceSwitch(dadosFinaisReal[i], indiceEscolhido));
+
+                    // Predito
+                    if (i < predicoesFinais.Count && predicoesFinais[i].PredictedValue != null)
                     {
-                        yPredito.Add((double)p.PredictedValue[indice]);
+                        // O array PredictedValue tem 512 itens (0 a 511).
+                        // O item [0] é a previsão da primeira coluna (PEHIST).
+                        // O item [1] é a previsão da segunda coluna (PSHIST).
+                        // ISSO NÃO MUDA COM O TEMPO. A IA devolve APENAS o passo atual.
+                        
+                        double valorBruto = predicoesFinais[i].PredictedValue[indiceEscolhido];
+                        double valorReal = Scaler.Desnormalizar(valorBruto, indiceEscolhido);
+                        yPredito.Add(valorReal);
                     }
                     else
                     {
                         yPredito.Add(0);
                     }
                 }
+
                 PlotarGrafico(yReal, yPredito);
-                this.Text = $"Concluído! Visualizando: {comboBox1.SelectedItem}";
-                MessageBox.Show($"Gráfico gerado para a coluna: {comboBox1.SelectedItem}");
+                this.Text = $"Concluído! (Janela Modelo: 512 | Visualizado: 336)";
+                MessageBox.Show($"Sucesso! O modelo rodou com 512, mas mostramos os últimos 336 pontos.");
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"ERRO:\n{ex.Message}\n\nInner: {ex.InnerException?.Message}");
+                MessageBox.Show($"ERRO:\n{ex.Message}");
             }
         }
 
@@ -172,60 +226,59 @@ namespace RN_Graph_App
         {
             var listaPronta = new List<OnnxInputPronto>();
 
-            // percorre linha por linha
             for (int i = 0; i < raw.Count; i++)
             {
                 var input = new OnnxInputPronto();
 
-                // listas separadas para cada entrada do ONNX
-                List<float> vetorX = new List<float>(); // Para batch_x (7 features)
-                List<float> vetorAux = new List<float>(); // Para batch_x_aux (4 features)
-                List<float> vetorMark = new List<float>(); // Para batch_x_mark (5 features)
+                List<float> vetorX = new List<float>(); 
+                List<float> vetorAux = new List<float>(); 
+                List<float> vetorMark = new List<float>(); 
 
-                // JANELA DESLIZANTE
-                // em vez de repetir o valor atual, vou buscar os 512 valores do passado (tamanho da janela)
                 for (int j = 0; j < janela; j++)
                 {
-                    // calcula qual índice do passado pegar
                     int indiceNoPassado = i - (janela - 1) + j;
-
-                    // se estiver no começo do arquivo não existe passado suficiente. Repete a linha 0 (Padding).
                     if (indiceNoPassado < 0) indiceNoPassado = 0;
 
                     var linha = raw[indiceNoPassado];
 
-                    // INPUT 1: batch_x (7 colunas principais)
-                    vetorX.Add(linha.PEHIST);
-                    vetorX.Add(linha.PSHIST);
-                    vetorX.Add(linha.REGULADOR1);
-                    vetorX.Add(linha.REGULADOR2);
-                    vetorX.Add(linha.PDT1);
-                    vetorX.Add(linha.PDT2);
-                    vetorX.Add(linha.FT1);
+                    // --- INPUT 1: BATCH_X (Normalizado pelos índices 0 a 6) ---
+                    vetorX.Add(Scaler.Normalizar(linha.PEHIST, 0));
+                    vetorX.Add(Scaler.Normalizar(linha.PSHIST, 1));
+                    vetorX.Add(Scaler.Normalizar(linha.REGULADOR1, 2));
+                    vetorX.Add(Scaler.Normalizar(linha.REGULADOR2, 3));
+                    vetorX.Add(Scaler.Normalizar(linha.PDT1, 4));
+                    vetorX.Add(Scaler.Normalizar(linha.PDT2, 5));
+                    vetorX.Add(Scaler.Normalizar(linha.FT1, 6));
 
-                    // INPUT 2: batch_x_aux (4 colunas delta)
-                    vetorAux.Add(linha.PEHIST_smooth_delta1);
-                    vetorAux.Add(linha.PEHIST_smooth_delta2);
-                    vetorAux.Add(linha.PSHIST_smooth_delta1);
-                    vetorAux.Add(linha.PSHIST_smooth_delta2);
+                    // --- INPUT 2: BATCH_X_AUX (Normalizado pelos índices 7 a 10) ---
+                    vetorAux.Add(Scaler.Normalizar(linha.PEHIST_smooth_delta1, 7));
+                    vetorAux.Add(Scaler.Normalizar(linha.PEHIST_smooth_delta2, 8));
+                    vetorAux.Add(Scaler.Normalizar(linha.PSHIST_smooth_delta1, 9));
+                    vetorAux.Add(Scaler.Normalizar(linha.PSHIST_smooth_delta2, 10));
 
-                    // INPUT 3: batch_x_mark (5 dummys de tempo)
-                    // 5 zeros por linha
-                    vetorMark.Add(0.0f);
-                    vetorMark.Add(0.0f);
-                    vetorMark.Add(0.0f);
-                    vetorMark.Add(0.0f);
-                    vetorMark.Add(0.0f);
+                    DateTime dataAtual = DateTime.Parse(linha.Date);
+
+                    float month = (dataAtual.Month - 1) / 11.0f - 0.5f;
+                    float day = (dataAtual.Day - 1) / 30.0f - 0.5f;     // Aproximação
+                    float weekday = (int)dataAtual.DayOfWeek / 6.0f - 0.5f;
+                    float hour = dataAtual.Hour / 23.0f - 0.5f;
+                    
+                    float minuteRaw = (float)(dataAtual.Minute / 15); 
+                    float minute = minuteRaw / 3.0f - 0.5f; 
+
+                    vetorMark.Add(month);
+                    vetorMark.Add(day);
+                    vetorMark.Add(weekday);
+                    vetorMark.Add(hour);
+                    vetorMark.Add(minute);
                 }
 
-                // converte as listas para Arrays e atribui ao objeto
-                input.BatchX = vetorX.ToArray(); // Tamanho 3584 (512*7)
-                input.BatchXAux = vetorAux.ToArray(); // Tamanho 2048 (512*4)
-                input.BatchXMark = vetorMark.ToArray(); // Tamanho 2560 (512*5)
+                input.BatchX = vetorX.ToArray(); 
+                input.BatchXAux = vetorAux.ToArray(); 
+                input.BatchXMark = vetorMark.ToArray(); 
 
                 listaPronta.Add(input);
             }
-
             return listaPronta;
         }
 
@@ -302,10 +355,13 @@ namespace RN_Graph_App
             curvaReal.IsY2Axis = false; // Fica na esquerda
 
             // curva predito (IA) -> Direita
-            LineItem curvaPred = pane.AddCurve("IA Predição", listPred, Color.Red, SymbolType.None);
+            // ... Dentro de PlotarGrafico ...
+
+            // curva predito (IA) 
+            LineItem curvaPred = pane.AddCurve("IA Predição", listPred, Color.Orange, SymbolType.None);
             curvaPred.Line.Width = 2;
             curvaPred.Line.Style = System.Drawing.Drawing2D.DashStyle.Solid;
-            curvaPred.IsY2Axis = true; // manda para a direita
+            curvaPred.IsY2Axis = false; 
 
             zedGraphControl1.AxisChange();
             zedGraphControl1.Invalidate();
