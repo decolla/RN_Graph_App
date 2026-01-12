@@ -27,9 +27,9 @@ namespace WinFormsOnnxApp
         private string _onnxPath = "final_model.onnx"; // ultimo modelo mandado como base
         private List<TimeSeriesPoint> _allData;
         
-        // Scalers (Média e Desvio Padrão)
-        private double[] _meanX, _stdX;
-        private double[] _meanAux, _stdAux;
+        // scalers -> média e IQR
+        private double[] _medianX, _iqrX;
+        private double[] _medianAux, _iqrAux;
 
         // armazena resultado da IA e índice de onde começou o teste
         private Tensor<float> _lastOutputTensor;
@@ -152,40 +152,50 @@ namespace WinFormsOnnxApp
         // função de cálculo de média e variação
         private void FitScalers()
         {
-            _meanX = new double[FeatX]; // vetor de média das colunas
-            _stdX = new double[FeatX]; // vetor de desvio padrão
-            _meanAux = new double[FeatAux];
-            _stdAux = new double[FeatAux];
+            _medianX = new double[FeatX]; // vetor de mediana
+            _iqrX = new double[FeatX]; // vetor de IQR
+            _medianAux = new double[FeatAux];
+            _iqrAux = new double[FeatAux];
 
-            int n = _allData.Count;
+            // define o limite de treino (70%) 
+            int trainSize = (int)(_allData.Count * 0.7);
+            if (trainSize == 0) trainSize = _allData.Count;
+            
+            // função local para calcular mediana e IQR
+            void CalcRobustStats(List<double> values, out double median, out double iqr)
+            {
+                if (values.Count == 0) { median = 0; iqr = 1; return; }
 
-            // calculo de média aritmética
-            foreach (var row in _allData)
-            {
-                for (int i = 0; i < FeatX; i++) _meanX[i] += row.X[i]; // soma todos os valores 
-                for (int i = 0; i < FeatAux; i++) _meanAux[i] += row.Aux[i]; // soma os aux
-            }
-            // divide pelo número de linhas 
-            for (int i = 0; i < FeatX; i++) _meanX[i] /= n;
-            for (int i = 0; i < FeatAux; i++) _meanAux[i] /= n;
+                values.Sort(); // ordena para achar quartis
+                int count = values.Count;
 
-            // calculo do desvio padrão
-            foreach (var row in _allData)
-            {
-                // dist de cada ponto até a média, elevada ao quadrado
-                for (int i = 0; i < FeatX; i++) _stdX[i] += Math.Pow(row.X[i] - _meanX[i], 2);
-                for (int i = 0; i < FeatAux; i++) _stdAux[i] += Math.Pow(row.Aux[i] - _meanAux[i], 2);
+                // mediana
+                if (count % 2 == 0)
+                    median = (values[count / 2 - 1] + values[count / 2]) / 2.0;
+                else
+                    median = values[count / 2];
+
+                // IQR = Q3 - Q1
+                double q1 = values[(int)(count * 0.25)];
+                double q3 = values[(int)(count * 0.75)];
+        
+                iqr = q3 - q1;
+                if (iqr == 0) iqr = 1; // proteção contra divisão por zero
             }
-            // tira raiz quadrada da média
-            for (int i = 0; i < FeatX; i++) 
+
+            // calcula estatísticas para features X
+            for (int i = 0; i < FeatX; i++)
             {
-                _stdX[i] = Math.Sqrt(_stdX[i] / n);
-                if (_stdX[i] == 0) _stdX[i] = 1; // não deixa ocorrer divisão por zero
+                // pega todos os valores da coluna 'i' até o índice trainSize
+                var colValues = _allData.Take(trainSize).Select(r => (double)r.X[i]).ToList();
+                CalcRobustStats(colValues, out _medianX[i], out _iqrX[i]);
             }
+
+            // calcula estatísticas para Aux
             for (int i = 0; i < FeatAux; i++)
             {
-                _stdAux[i] = Math.Sqrt(_stdAux[i] / n);
-                if (_stdAux[i] == 0) _stdAux[i] = 1;
+                var colValues = _allData.Take(trainSize).Select(r => (double)r.Aux[i]).ToList();
+                CalcRobustStats(colValues, out _medianAux[i], out _iqrAux[i]);
             }
         }
 
@@ -290,8 +300,8 @@ namespace WinFormsOnnxApp
 
                 // normalizar batch_x
                 for (int f = 0; f < FeatX; f++)
-                    // subtrai a média e dividimos pelo desvio padrão
-                    tensorX[0, t, f] = (float)((row.X[f] - _meanX[f]) / _stdX[f]);
+                    // subtrai a mediana e dividimos pelo IQR
+                    tensorX[0, t, f] = (float)((row.X[f] - _medianX[f]) / _iqrX[f]);
 
                 // normalizar o temporal
                 tensorMark[0, t, 0] = (float)((row.Date.Month - 1) / 11.0 - 0.5);
@@ -302,7 +312,7 @@ namespace WinFormsOnnxApp
 
                 // normalizar aux
                 for (int f = 0; f < FeatAux; f++)
-                    tensorAux[0, t, f] = (float)((row.Aux[f] - _meanAux[f]) / _stdAux[f]);
+                    tensorAux[0, t, f] = (float)((row.Aux[f] - _medianAux[f]) / _iqrAux[f]);
             }
 
             // cira pacote com os tensores criados, com os nomes esperados
@@ -339,7 +349,7 @@ namespace WinFormsOnnxApp
             GraphPane pane = zedGraphControl1.GraphPane;
             pane.CurveList.Clear();
             
-            // título do Gráfico
+            // título do gráfico
             pane.Title.Text = $"Validação: {_featureNames[selectedFeatureIndex]}";
             pane.YAxis.Title.Text = $"Valor: {_featureNames[selectedFeatureIndex]}";
 
@@ -385,7 +395,7 @@ namespace WinFormsOnnxApp
                     // PREDIÇÃO IA
                     float normalizedVal = _lastOutputTensor[0, i, tensorFeatIndex];
                     // desnormalizar
-                    double yPred = (normalizedVal * _stdX[selectedFeatureIndex]) + _meanX[selectedFeatureIndex];
+                    double yPred = (normalizedVal * _iqrX[selectedFeatureIndex]) + _medianX[selectedFeatureIndex];
 
                     listPred.Add(x, yPred);
                 }
@@ -408,19 +418,19 @@ namespace WinFormsOnnxApp
                 pane.XAxis.Title.Text = "Tempo";
                 pane.XAxis.Scale.Format = "yyyy/dd/MM\nHH:mm";
 
-                // 1. DADOS REAIS (AZUL) - FILTRADOS PELA DATA
+                // DADOS REAIS (AZUL) - FILTRADOS PELA DATA
                 // só adiciona ao gráfico se a data for >= 2024-10-11
                 for (int i = 0; i < _allData.Count; i++)
                 {
-                    if (_allData[i].Date < targetDate) continue; // Pula dados antigos
+                    if (_allData[i].Date < targetDate) continue; // pula dados antigos
 
                     double xDate = (double)new XDate(_allData[i].Date);
                     double yReal = _allData[i].X[selectedFeatureIndex];
                     listReal.Add(xDate, yReal);
                 }
 
-                // 2. DADOS PREDITOS (LARANJA)
-                // A lógica do _lastStartIndex já garante que a predição começa na data certa
+                // DADOS PREDITOS (LARANJA)
+                // a lógica do _lastStartIndex já garante que a predição começa na data certa
                 int currentDataIndex = _lastStartIndex + SeqLen;
 
                 foreach (float[] batchData in _predictionHistory)
@@ -429,13 +439,11 @@ namespace WinFormsOnnxApp
                     {
                         if (currentDataIndex >= _allData.Count) break;
 
-                        // Não precisamos filtrar aqui pois a inferência já começou na data certa,
-                        // mas por segurança, usamos a mesma data real para o eixo X.
                         double xDate = (double)new XDate(_allData[currentDataIndex].Date);
                 
                         int flatIndex = (step * outFeats) + tensorFeatIndex;
                         float normalizedVal = batchData[flatIndex];
-                        double yPred = (normalizedVal * _stdX[selectedFeatureIndex]) + _meanX[selectedFeatureIndex];
+                        double yPred = (normalizedVal * _iqrX[selectedFeatureIndex]) + _medianX[selectedFeatureIndex];
 
                         listPred.Add(xDate, yPred);
                         currentDataIndex++;
