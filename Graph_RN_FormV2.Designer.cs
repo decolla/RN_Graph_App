@@ -20,6 +20,7 @@
             this.btnRunInference = new System.Windows.Forms.Button();
             this.lblStatus = new System.Windows.Forms.Label();
             this.cmbColumns = new System.Windows.Forms.ComboBox();
+            this.cmbViewMode = new System.Windows.Forms.ComboBox();
             this.label1 = new System.Windows.Forms.Label();
             this.SuspendLayout();
             // 
@@ -82,6 +83,16 @@
             this.cmbColumns.TabIndex = 4;
             this.cmbColumns.SelectedIndexChanged += new System.EventHandler(this.cmbColumns_SelectedIndexChanged);
             // 
+            // cmbViewMode
+            // 
+            this.cmbViewMode.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
+            this.cmbViewMode.FormattingEnabled = true;
+            this.cmbViewMode.Location = new System.Drawing.Point(cmbColumns.Location.X + cmbColumns.Width + 10, cmbColumns.Location.Y); // põe ao lado do outro
+            this.cmbViewMode.Name = "cmbViewMode";
+            this.cmbViewMode.Size = new System.Drawing.Size(180, 21);
+            this.cmbViewMode.DropDownStyle = ComboBoxStyle.DropDownList;
+            this.Controls.Add(cmbViewMode);
+            // 
             // label1
             // 
             this.label1.AutoSize = true;
@@ -116,6 +127,7 @@
         private System.Windows.Forms.Button btnRunInference;
         private System.Windows.Forms.Label lblStatus;
         private System.Windows.Forms.ComboBox cmbColumns;
+        private System.Windows.Forms.ComboBox cmbViewMode;
         private System.Windows.Forms.Label label1;
     }
 }

@@ -1,19 +1,19 @@
-using WinFormsOnnxApp;
+using System;
+using System.Windows.Forms;
 
-namespace RN_Graph_App;
-
-static class ProgramV2
+namespace WinFormsOnnxApp
 {
-    
-    /// <summary>
-    ///  The main entry point for the application.
-    /// </summary>
-    [STAThread]
-    static void Main()
+    static class ProgramV2
     {
-        // To customize application configuration such as set high DPI settings or default font,
-        // see https://aka.ms/applicationconfiguration.
-        ApplicationConfiguration.Initialize();
-        Application.Run(new Graph_RN_FormV2());
+        /// <summary>
+        /// Ponto de entrada principal para o aplicativo.
+        /// </summary>
+        [STAThread]
+        static void Main()
+        {
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Application.Run(new Graph_RN_FormV2());
+        }
     }
 }
