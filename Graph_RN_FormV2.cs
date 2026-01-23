@@ -1,6 +1,6 @@
 using System.Globalization;
-using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using RN_Graph_App.Data;
 using RN_Graph_App.Models;
 using ZedGraph;
 
@@ -9,45 +9,47 @@ namespace WinFormsOnnxApp
     public partial class Graph_RN_FormV2 : Form
     {
         // CONFIGURAÇÕES DO MODELO
-        private const int SeqLen = 512; // janela de imput
+        private const int SeqLen = 720; // janela de imput
         private const int PredLen = 336; // janela da predição
-        
-        // definição das features (batch_x)
-        private const int FeatX = 7;
-        private readonly string[] _featureNames = new string[] 
-        { 
-            "PEHIST", "PSHIST", "REGULADOR1", "REGULADOR2", "PDT1", "PDT2", "FT1" 
-        };
 
-        private const int FeatAux = 4;
-        private const int FeatMark = 5;
+        // definição das features 
+        private const int FeatX = 7;
+
+        private readonly string[] _featureNames = new string[]
+        {
+            "PEHIST", "PSHIST", "REGULADOR1", "REGULADOR2", "PDT1", "PDT2", "FT1"
+        };
 
         // path para os arquivos
         private string _csvPath;
         private string _onnxPath = "final_model.onnx"; // ultimo modelo mandado como base
-        private List<TimeSeriesPoint> _allData;
-        
-        // scalers -> média e IQR
-        private double[] _medianX, _iqrX;
-        private double[] _medianAux, _iqrAux;
 
-        // armazena resultado da IA e índice de onde começou o teste
+        // Estado dos dados
+        private List<TimeSeriesPoint> _allData;
         private Tensor<float> _lastOutputTensor;
         private int _lastStartIndex = -1;
-        
-        // VARIÁVEL PARA TODOS OS LOTES: lista para armazenar os blocos de predição
-        private List<float[]> _predictionHistory;
+
+        // VARIÁVEL PARA TODOS OS LOTES: lista para armazenar os blocos de predição (indíce original, e resultado)
+        private List<(int Index, float[] Result)> _predictionHistory;
+
+        // MÓDULOS (Serviços)
+        private FeatureScaler _scaler;
+        private OnnxInferenceService _onnxService;
 
         public Graph_RN_FormV2()
         {
             InitializeComponent();
             SetupGraph();
-            
+
+            // Inicializa os módulos
+            _scaler = new FeatureScaler(FeatX, 4); // 4 = FeatAux
+            _onnxService = new OnnxInferenceService(SeqLen, FeatX, 5, 4); // 5 = FeatMark, 4 = FeatAux
+
             // ComboBox das colunas
             cmbColumns.Items.AddRange(_featureNames);
             cmbColumns.SelectedIndex = 1; // PSHIST como padrão
             cmbColumns.Enabled = false;
-            
+
             // ComboBox de modos de visualização
             cmbViewMode.Items.Add("Validação (336 Steps)");
             cmbViewMode.Items.Add("Histórico completo (Tempo)");
@@ -60,23 +62,23 @@ namespace WinFormsOnnxApp
         private void SetupGraph()
         {
             GraphPane myPane = zedGraphControl1.GraphPane;
-            myPane.Title.Text = "Validação: Real vs Predição";
+            myPane.Title.Text = "Validação: real e predição";
             myPane.XAxis.Title.Text = "Horizonte de previsão (Steps)";
             myPane.YAxis.Title.Text = "Valor";
-            
+
             // grades para facilitar leitura
             myPane.XAxis.MajorGrid.IsVisible = true;
             myPane.YAxis.MajorGrid.IsVisible = true;
             myPane.XAxis.MajorGrid.Color = Color.LightGray;
             myPane.YAxis.MajorGrid.Color = Color.LightGray;
         }
-        
+
         // evento que troca o modo de visualização
         private void CmbViewMode_SelectedIndexChanged(object sender, EventArgs e)
         {
             if (_lastOutputTensor != null) UpdatePlot();
         }
-        
+
         // botão de leitura do CSV
         private void btnLoadData_Click(object sender, EventArgs e)
         {
@@ -96,43 +98,19 @@ namespace WinFormsOnnxApp
         {
             try
             {
-                // le todas as linhas do arquivo
-                var lines = File.ReadAllLines(path);
-                _allData = new List<TimeSeriesPoint>();
+                // Delega a leitura para a classe CsvDataLoader
+                _allData = CsvDataLoader.Load(path, FeatX, 4); // 4 = FeatAux
 
-                for (int i = 1; i < lines.Length; i++)
-                {
-                    // quebra de linhas (parts) na vírgula
-                    var parts = lines[i].Split(',');
-                    if (parts.Length < 12) continue; // verifica se tem 12 colunas
-                    
-                    TimeSeriesPoint row = new TimeSeriesPoint();
-                    // tenta ler a primeira coluna como data
-                    if (DateTime.TryParse(parts[0], CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime dt))
-                        row.Date = dt;
-                    else 
-                        row.Date = DateTime.MinValue;
-                    
-                    // preenche o vetor X (batch_x)
-                    row.X = new float[FeatX];
-                    for (int j = 0; j < FeatX; j++) row.X[j] = ParseFloat(parts[j + 1]);
-
-                    // preenche o vetor Aux (batch_aux)
-                    row.Aux = new float[FeatAux];
-                    for (int j = 0; j < FeatAux; j++) row.Aux[j] = ParseFloat(parts[j + 1 + FeatX]);
-
-                    _allData.Add(row);
-                }
-                
                 // verifica se o arquivo csv tem tamanho suficiente
                 if (_allData.Count < SeqLen + PredLen)
                 {
                     MessageBox.Show($"CSV insuficiente. Mínimo: {SeqLen + PredLen} linhas.");
                     return;
                 }
-                
-                // CALCULA A MEDIA E DESVIO PADRÃO
-                FitScalers();
+
+                // CALCULA A MEDIANA E IQR (Delega para FeatureScaler)
+                _scaler.FitScalers(_allData, _featureNames);
+
                 lblStatus.Text = $"Dados carregados: {_allData.Count} linhas.";
                 btnRunInference.Enabled = true;
             }
@@ -141,65 +119,8 @@ namespace WinFormsOnnxApp
                 MessageBox.Show("Erro ao ler CSV: " + ex.Message);
             }
         }
-        
-        // formatação de valores para float 
-        private float ParseFloat(string val)
-        {
-            if (float.TryParse(val, NumberStyles.Any, CultureInfo.InvariantCulture, out float res)) return res;
-            return 0f;
-        }
 
-        // função de cálculo de média e variação
-        private void FitScalers()
-        {
-            _medianX = new double[FeatX]; // vetor de mediana
-            _iqrX = new double[FeatX]; // vetor de IQR
-            _medianAux = new double[FeatAux];
-            _iqrAux = new double[FeatAux];
-
-            // define o limite de treino (70%) 
-            int trainSize = (int)(_allData.Count * 0.7);
-            if (trainSize == 0) trainSize = _allData.Count;
-            
-            // função local para calcular mediana e IQR
-            void CalcRobustStats(List<double> values, out double median, out double iqr)
-            {
-                if (values.Count == 0) { median = 0; iqr = 1; return; }
-
-                values.Sort(); // ordena para achar quartis
-                int count = values.Count;
-
-                // mediana
-                if (count % 2 == 0)
-                    median = (values[count / 2 - 1] + values[count / 2]) / 2.0;
-                else
-                    median = values[count / 2];
-
-                // IQR = Q3 - Q1
-                double q1 = values[(int)(count * 0.25)];
-                double q3 = values[(int)(count * 0.75)];
-        
-                iqr = q3 - q1;
-                if (iqr == 0) iqr = 1; // proteção contra divisão por zero
-            }
-
-            // calcula estatísticas para features X
-            for (int i = 0; i < FeatX; i++)
-            {
-                // pega todos os valores da coluna 'i' até o índice trainSize
-                var colValues = _allData.Take(trainSize).Select(r => (double)r.X[i]).ToList();
-                CalcRobustStats(colValues, out _medianX[i], out _iqrX[i]);
-            }
-
-            // calcula estatísticas para Aux
-            for (int i = 0; i < FeatAux; i++)
-            {
-                var colValues = _allData.Take(trainSize).Select(r => (double)r.Aux[i]).ToList();
-                CalcRobustStats(colValues, out _medianAux[i], out _iqrAux[i]);
-            }
-        }
-
-        private void btnRunInference_Click(object sender, EventArgs e)
+        private async void btnRunInference_Click(object sender, EventArgs e)
         {
             // verifica se o arquivo onnx existe
             // caso não existir, abre a janela de procura
@@ -216,112 +137,78 @@ namespace WinFormsOnnxApp
             try
             {
                 /* =========== PARTE DE PREDIÇÃO E INDEX ===============
-                 
                 pred_len = 336 -> tamanho da predição
                 preds_pytorch[0] -> primeira amostra do conjunto
                 int(len(df_raw) * 0.1) -> 10% dos dados reais
                 border1s[2] -> índice da janela inicial
-            
                 border1s[2] = Total - num_test - seq_len
-                
-                
                  ===================================================== */
-                
+
+
+                // ========================================================================
+                // AJUSTE DE VELOCIDADE (12 = EQUILÍBRIO, 24 = RÁPIDO, 48 = MUITO RÁPIDO)
+                int step = 24;
+                // ========================================================================
+
+
                 // Backtesting: separa os últimos x dados reais (predição)
                 int totalCount = _allData.Count;
                 int numTest = (int)(totalCount * 0.1); // 10% para teste
-                
-                // [cite_start]
+
                 // fórmula: len(df) - num_test - seq_len
                 _lastStartIndex = totalCount - numTest - SeqLen;
                 // indice onde começa a leitura dos 512 dados de entrada
-                
+
                 if (_lastStartIndex < 0)
                 {
                     MessageBox.Show("Dados insuficientes.");
                     return;
                 }
-                
+
                 // inicia a lista de histórico
-                _predictionHistory = new List<float[]>();
+                _predictionHistory = new List<(int, float[])>();
 
-                using (var session = new InferenceSession(_onnxPath))
+                // Configura um callback para atualizar o status na UI durante o processamento
+                // Usando Invoke para garantir thread-safety com a UI
+                Action<int> progressCallback = (count) =>
                 {
-                    for (int i = _lastStartIndex; i <= totalCount - SeqLen; i += PredLen)
-                    {
-                        // prepara dados para essa janela que percorrerá o input
-                        var inputWindow = _allData.GetRange(i, SeqLen);
-                        
-                        // passagem de dados pela rede neural
-                        var inputs = PrepareInputs(inputWindow);
+                    // Opcional: Atualizar label aqui se necessário
+                };
 
-                        using (var results = session.Run(inputs))
-                        {
-                            // armazena os dados de output em memória 
-                            var outputRaw = results.First(x => x.Name == "output").AsTensor<float>();
-                            float[] batchResult = outputRaw.ToArray();
-                            
-                            // salva o resultado desse lote na lista
-                            _predictionHistory.Add(batchResult);
-                        }
-                    }
-                }
-                
-                // armazena o primeiro tensor
+                // task para não travar a tela enquanto roda 
+                await Task.Run(() =>
+                {
+                    // Executa a inferência usando o serviço dedicado
+                    _predictionHistory = _onnxService.RunInference(
+                        _onnxPath,
+                        _allData,
+                        _scaler,
+                        _lastStartIndex,
+                        totalCount,
+                        PredLen,
+                        step,
+                        progressCallback
+                    );
+                });
+
+                // armazena o primeiro tensor para modo de vizualização estático
                 if (_predictionHistory.Count > 0)
                 {
-                    long[] dims = { 1, PredLen, 7 }; // dimensões fixas do modelo
-                    _lastOutputTensor = new DenseTensor<float>(_predictionHistory[0], new ReadOnlySpan<int>(new[] { 1, PredLen, 7 }));
+                    // [0] acessa o array da tupla
+                    _lastOutputTensor = new DenseTensor<float>(_predictionHistory[0].Result,
+                        new ReadOnlySpan<int>(new[] { 1, PredLen, 7 })); // 7 é o Featx
                 }
 
                 cmbColumns.Enabled = true;
                 cmbViewMode.Enabled = true;
                 // desenha as linhas no gráfico
-                UpdatePlot(); 
-                lblStatus.Text = "Gráfico gerado. Selecione o modo de visualização.";
+                UpdatePlot();
+                lblStatus.Text = $"Gráfico gerado com {_predictionHistory.Count} pontos. Selecione o modo de visualização.";
             }
             catch (Exception ex)
             {
                 MessageBox.Show($"Erro na inferência: {ex.Message}");
             }
-        }
-        
-        // função auxiliar para preparar os tensores
-        private List<NamedOnnxValue> PrepareInputs(List<TimeSeriesPoint> window)
-        {
-            // prepara os tensores
-            var tensorX = new DenseTensor<float>(new[] { 1, SeqLen, FeatX });
-            var tensorMark = new DenseTensor<float>(new[] { 1, SeqLen, FeatMark });
-            var tensorAux = new DenseTensor<float>(new[] { 1, SeqLen, FeatAux });
-
-            for (int t = 0; t < SeqLen; t++)
-            {
-                var row = window[t];
-
-                // normalizar batch_x
-                for (int f = 0; f < FeatX; f++)
-                    // subtrai a mediana e dividimos pelo IQR
-                    tensorX[0, t, f] = (float)((row.X[f] - _medianX[f]) / _iqrX[f]);
-
-                // normalizar o temporal
-                tensorMark[0, t, 0] = (float)((row.Date.Month - 1) / 11.0 - 0.5);
-                tensorMark[0, t, 1] = (float)((row.Date.Day - 1) / 30.0 - 0.5);
-                tensorMark[0, t, 2] = (float)((int)row.Date.DayOfWeek / 6.0 - 0.5);
-                tensorMark[0, t, 3] = (float)(row.Date.Hour / 23.0 - 0.5);
-                tensorMark[0, t, 4] = (float)(row.Date.Minute / 59.0 - 0.5);
-
-                // normalizar aux
-                for (int f = 0; f < FeatAux; f++)
-                    tensorAux[0, t, f] = (float)((row.Aux[f] - _medianAux[f]) / _iqrAux[f]);
-            }
-
-            // cira pacote com os tensores criados, com os nomes esperados
-            return new List<NamedOnnxValue>
-            {
-                NamedOnnxValue.CreateFromTensor("batch_x", tensorX),
-                NamedOnnxValue.CreateFromTensor("batch_x_mark", tensorMark),
-                NamedOnnxValue.CreateFromTensor("batch_x_aux", tensorAux)
-            };
         }
 
         // comboBox para trocar de gráfico de acordo com a coluna 
@@ -333,22 +220,32 @@ namespace WinFormsOnnxApp
             }
         }
 
+        // forma o gráfico de real vs predição
         private void UpdatePlot()
         {
             // verifica se a IA já rodou
             if (_predictionHistory == null || _predictionHistory.Count == 0) return;
-            
+
             // verifica a coluna escolhida
             int selectedFeatureIndex = cmbColumns.SelectedIndex;
             if (selectedFeatureIndex < 0) selectedFeatureIndex = 0;
-            
+
             // verifica o modo de vizualização
             int viewMode = cmbViewMode.SelectedIndex;
-            
+
             // limpa o gráfico
             GraphPane pane = zedGraphControl1.GraphPane;
             pane.CurveList.Clear();
-            
+
+            // reseta o zoom
+            zedGraphControl1.ZoomOutAll(pane);
+            pane.XAxis.Scale.MinAuto = true;
+            pane.YAxis.Scale.MinAuto = true;
+            pane.YAxis.Scale.MaxAuto = true;
+            pane.XAxis.Scale.MaxAuto = true;
+
+            pane.CurveList.Clear();
+
             // título do gráfico
             pane.Title.Text = $"Validação: {_featureNames[selectedFeatureIndex]}";
             pane.YAxis.Title.Text = $"Valor: {_featureNames[selectedFeatureIndex]}";
@@ -356,112 +253,111 @@ namespace WinFormsOnnxApp
             PointPairList listReal = new PointPairList();
             PointPairList listPred = new PointPairList();
 
-            // _lastStartIndex = onde iniciou os dados de leitura
-            // começa logo após os 512 passos 
-            int startOfPredictionInCsv = _lastStartIndex + SeqLen;
-
-            // plotar APENAS o tamanho da predição 
-            // assim as duas linhas ficam exatamente uma sobre a outra
-            int len = PredLen; 
-            
             // dimensões do tensor de saída
-            int outFeats = 7; 
-            
+            int outFeats = 7;
+
             // proteção de índice se o output tiver menos features
             int tensorFeatIndex = (selectedFeatureIndex < outFeats) ? selectedFeatureIndex : 0;
-            
+
             // data de corte para visualização com base nos gráficos de treino
-            DateTime targetDate = new DateTime(2024, 10, 6);
+            DateTime targetDateStart = new DateTime(2024, 10, 6);
+            DateTime targetDateEnd = new DateTime(2024, 12, 13);
 
             if (viewMode == 0)
             {
                 pane.XAxis.Type = AxisType.Linear; // eixo linear simples (0, 1, 2...)
-                pane.XAxis.Title.Text = "Horizonte de Previsão (Steps)";
+                pane.XAxis.Title.Text = "Horizonte de previsão (Steps)";
                 pane.XAxis.Scale.Format = "0";
-                
-                for (int i = 0; i < len; i++)
+
+                // pega o índice real de início da predição no CSV
+                int startReal = _predictionHistory[0].Index + SeqLen;
+
+                for (int i = 0; i < PredLen; i++)
                 {
                     // EIXO X
                     double x = i;
 
                     // DADO REAL (CSV)
-                    int realIdx = startOfPredictionInCsv + i;
+                    int realIdx = startReal + i;
                     if (realIdx < _allData.Count)
                     {
-                        double yReal = _allData[realIdx].X[selectedFeatureIndex];
-                        listReal.Add(x, yReal);
+                        listReal.Add(x, _allData[realIdx].X[selectedFeatureIndex]);
                     }
 
                     // PREDIÇÃO IA
                     float normalizedVal = _lastOutputTensor[0, i, tensorFeatIndex];
-                    // desnormalizar
-                    double yPred = (normalizedVal * _iqrX[selectedFeatureIndex]) + _medianX[selectedFeatureIndex];
+                    // desnormalizar (Usa o Scaler)
+                    double yPred = (normalizedVal * _scaler.IqrX[selectedFeatureIndex]) + _scaler.MedianX[selectedFeatureIndex];
 
                     listPred.Add(x, yPred);
                 }
-                
+
                 LineItem curvePred = pane.AddCurve("Predição IA", listPred, Color.Orange, SymbolType.None);
                 curvePred.Line.Width = 2.5f;
-                curvePred.Line.Style = System.Drawing.Drawing2D.DashStyle.Solid; 
+                curvePred.Line.Style = System.Drawing.Drawing2D.DashStyle.Solid;
 
                 // adicionar curvas
                 LineItem curveReal = pane.AddCurve("Real", listReal, Color.Blue, SymbolType.None);
                 curveReal.Line.Width = 2.5f;
-            
+
                 // ajusta escala
                 zedGraphControl1.AxisChange();
                 zedGraphControl1.Invalidate();
             }
-            else 
+            else // HISTÓRICO COMPLETO
             {
                 pane.XAxis.Type = AxisType.Date;
                 pane.XAxis.Title.Text = "Tempo";
                 pane.XAxis.Scale.Format = "yyyy/dd/MM\nHH:mm";
 
-                // DADOS REAIS (AZUL) - FILTRADOS PELA DATA
+                // DADOS REAIS 
                 // só adiciona ao gráfico se a data for >= 2024-10-11
                 for (int i = 0; i < _allData.Count; i++)
                 {
-                    if (_allData[i].Date < targetDate) continue; // pula dados antigos
+                    if (_allData[i].Date < targetDateStart || _allData[i].Date > targetDateEnd) continue; // pula dados antigos e aplica limite aos novos
 
                     double xDate = (double)new XDate(_allData[i].Date);
-                    double yReal = _allData[i].X[selectedFeatureIndex];
-                    listReal.Add(xDate, yReal);
+                    listReal.Add(xDate, _allData[i].X[selectedFeatureIndex]);
                 }
 
-                // DADOS PREDITOS (LARANJA)
-                // a lógica do _lastStartIndex já garante que a predição começa na data certa
-                int currentDataIndex = _lastStartIndex + SeqLen;
-
-                foreach (float[] batchData in _predictionHistory)
+                // DADOS PREDITOS
+                // usa o índice original salvo na lista de histórico
+                foreach (var item in _predictionHistory)
                 {
-                    for (int step = 0; step < PredLen; step++)
-                    {
-                        if (currentDataIndex >= _allData.Count) break;
+                    int originalIndex = item.Index; // onde a janela de imput começou no CSV
+                    float[] result = item.Result; // resultado dessa predição
 
-                        double xDate = (double)new XDate(_allData[currentDataIndex].Date);
-                
-                        int flatIndex = (step * outFeats) + tensorFeatIndex;
-                        float normalizedVal = batchData[flatIndex];
-                        double yPred = (normalizedVal * _iqrX[selectedFeatureIndex]) + _medianX[selectedFeatureIndex];
+                    int predictionDataIdx = originalIndex + SeqLen; // índice do primeiro ponto predito no CSV
 
-                        listPred.Add(xDate, yPred);
-                        currentDataIndex++;
-                    }
+                    if (predictionDataIdx >= _allData.Count) break; // proteção
+
+                    if (_allData[predictionDataIdx].Date < targetDateStart || _allData[predictionDataIdx].Date > targetDateEnd) continue; // pula dados antigos e restringe novos
+
+                    double xDate = (double)new XDate(_allData[predictionDataIdx].Date);
+
+                    // verifica o índice do tensor
+                    int flatIndex = (0 * outFeats) + tensorFeatIndex;
+                    float normalizedVal = result[flatIndex];
+                    // aplica a desnormalização (Usa o Scaler)
+                    double yPred = (normalizedVal * _scaler.IqrX[selectedFeatureIndex]) + _scaler.MedianX[selectedFeatureIndex];
+
+                    listPred.Add(xDate, yPred);
+
                 }
+
+                // adicionar Curvas
                 LineItem curvePred = pane.AddCurve("Predição IA", listPred, Color.Firebrick, SymbolType.None);
                 curvePred.Line.Width = 1.8f;
-                curvePred.Line.Style = System.Drawing.Drawing2D.DashStyle.Solid; 
+                curvePred.Line.Style = System.Drawing.Drawing2D.DashStyle.Solid;
 
                 // adicionar Curvas
                 LineItem curveReal = pane.AddCurve("Real", listReal, Color.CornflowerBlue, SymbolType.None);
                 curveReal.Line.Width = 1.8f;
-            
+
                 // ajusta escala
                 zedGraphControl1.AxisChange();
                 zedGraphControl1.Invalidate();
             }
-            
         }
     }
 }

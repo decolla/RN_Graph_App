@@ -26,9 +26,11 @@
             // 
             // zedGraphControl1
             // 
-            this.zedGraphControl1.Anchor = ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top | System.Windows.Forms.AnchorStyles.Bottom) 
-            | System.Windows.Forms.AnchorStyles.Left) 
-            | System.Windows.Forms.AnchorStyles.Right)));
+            this.zedGraphControl1.Anchor =
+                ((System.Windows.Forms.AnchorStyles)((((System.Windows.Forms.AnchorStyles.Top |
+                                                        System.Windows.Forms.AnchorStyles.Bottom)
+                                                       | System.Windows.Forms.AnchorStyles.Left)
+                                                      | System.Windows.Forms.AnchorStyles.Right)));
             this.zedGraphControl1.Location = new System.Drawing.Point(12, 60);
             this.zedGraphControl1.Name = "zedGraphControl1";
             this.zedGraphControl1.ScrollGrace = 0D;
@@ -66,7 +68,8 @@
             // lblStatus
             // 
             this.lblStatus.AutoSize = true;
-            this.lblStatus.Font = new System.Drawing.Font("Microsoft Sans Serif", 9F, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, ((byte)(0)));
+            this.lblStatus.Font = new System.Drawing.Font("Microsoft Sans Serif", 9F, System.Drawing.FontStyle.Regular,
+                System.Drawing.GraphicsUnit.Point, ((byte)(0)));
             this.lblStatus.Location = new System.Drawing.Point(460, 20);
             this.lblStatus.Name = "lblStatus";
             this.lblStatus.Size = new System.Drawing.Size(161, 15);
@@ -87,7 +90,9 @@
             // 
             this.cmbViewMode.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList;
             this.cmbViewMode.FormattingEnabled = true;
-            this.cmbViewMode.Location = new System.Drawing.Point(cmbColumns.Location.X + cmbColumns.Width + 10, cmbColumns.Location.Y); // põe ao lado do outro
+            this.cmbViewMode.Location =
+                new System.Drawing.Point(cmbColumns.Location.X + cmbColumns.Width + 10,
+                    cmbColumns.Location.Y); // põe ao lado do outro
             this.cmbViewMode.Name = "cmbViewMode";
             this.cmbViewMode.Size = new System.Drawing.Size(180, 21);
             this.cmbViewMode.DropDownStyle = ComboBoxStyle.DropDownList;
@@ -117,7 +122,6 @@
             this.Text = "Validação ONNX - Real vs Predição";
             this.ResumeLayout(false);
             this.PerformLayout();
-
         }
 
         #endregion
